@@ -1,0 +1,38 @@
+name: Monitor job_sales
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - run: pip install requests
+
+      - name: Run monitor
+        run: python monitor.py
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          JOB_SALES_CHANNEL_ID: ${{ secrets.JOB_SALES_CHANNEL_ID }}
+          REPITTE_HOTEL_CHANNEL_ID: ${{ secrets.REPITTE_HOTEL_CHANNEL_ID }}
+          HIRAMOTO_USER_ID: ${{ secrets.HIRAMOTO_USER_ID }}
+          TAKESUE_USER_ID: ${{ secrets.TAKESUE_USER_ID }}
+          REPITTE_TEAM_GROUP_ID: ${{ secrets.REPITTE_TEAM_GROUP_ID }}
+
+      - name: Save state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add last_processed.txt
+          git diff --staged --quiet || git commit -m "update last processed [skip ci]" && git push
