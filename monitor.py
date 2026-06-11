@@ -17,7 +17,7 @@ STATE_FILE = "last_processed.txt"
 def read_last_ts():
     if os.path.exists(STATE_FILE) and os.path.getsize(STATE_FILE) > 0:
         return open(STATE_FILE).read().strip()
-    return str(datetime.now(timezone.utc).timestamp() - 600)
+    return str(datetime.now(timezone.utc).timestamp() - 1800)
 
 
 def write_last_ts(ts):
