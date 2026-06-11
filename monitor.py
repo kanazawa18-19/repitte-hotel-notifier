@@ -68,16 +68,22 @@ def upload_file(f, channel, comment=None):
         json={"filename": f.get("name", "file"), "length": len(content)},
     ).json()
 
+    if not resp.get("ok"):
+        print(f"files.getUploadURLExternal failed: {resp}")
+        return
+
     requests.post(resp["upload_url"], data=content)
 
     payload = {"files": [{"id": resp["file_id"]}], "channel_id": channel}
     if comment:
         payload["initial_comment"] = comment
-    requests.post(
+    result = requests.post(
         "https://slack.com/api/files.completeUploadExternal",
         headers=HEADERS,
         json=payload,
-    )
+    ).json()
+    if not result.get("ok"):
+        print(f"files.completeUploadExternal failed: {result}")
 
 
 def main():
