@@ -92,7 +92,7 @@ def main():
 
     for msg in sorted(messages, key=lambda m: m["ts"]):
         text = msg.get("text", "")
-        if "契約サービス：リピッテホテル" not in text:
+        if "【契約獲得】" not in text or "リピッテホテル" not in text:
             continue
 
         new_text = transform(text)
