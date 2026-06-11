@@ -65,7 +65,7 @@ def upload_file(f, channel, comment=None):
     resp = requests.post(
         "https://slack.com/api/files.getUploadURLExternal",
         headers=HEADERS,
-        json={"filename": f.get("name", "file"), "length": len(content)},
+        data={"filename": f.get("name", "file"), "length": len(content)},
     ).json()
 
     if not resp.get("ok"):
