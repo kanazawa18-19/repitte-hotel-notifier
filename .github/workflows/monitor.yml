@@ -1,8 +1,13 @@
 name: Monitor job_sales
 
 on:
+  # ★ 起動係は GAS の時限トリガー（30分おきに workflow_dispatch を叩く）。
+  #   実体は cnctor-onboarding の gas/dispatch-trigger.gs にある（1本で両リポジトリを叩く）。
+  #   GitHub の schedule: は混雑時に間引かれ、'*/5' と書いても実測は
+  #   24回中24回が60分超・中央値433分・最大2925分（＝2日）だった。
+  #   消さずに4時間おきの保険として残す。GAS が止まったときに無音で全停止しないため。
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '0 */4 * * *'
   workflow_dispatch:
 
 permissions:
