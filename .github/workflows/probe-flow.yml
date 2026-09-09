@@ -1,0 +1,29 @@
+# #job_sales の流量と転記の取りこぼしを、読むだけで確かめるための手動実行専用ワークフロー。
+# 本番のSlackへは一切書き込まない（conversations.history のみ）。定期実行はしない。
+name: Probe flow
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: '何日分さかのぼって数えるか（既定30）'
+        required: false
+        default: '30'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # last_processed.txt の全履歴から取得窓を復元するため
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests
+      - run: python scripts/probe_flow.py
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          JOB_SALES_CHANNEL_ID: ${{ secrets.JOB_SALES_CHANNEL_ID }}
+          REPITTE_HOTEL_CHANNEL_ID: ${{ secrets.REPITTE_HOTEL_CHANNEL_ID }}
+          PROBE_DAYS: ${{ inputs.days }}
