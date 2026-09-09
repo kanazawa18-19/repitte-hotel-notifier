@@ -154,7 +154,10 @@ def fetch_all_messages(channel, oldest):
             return messages
         cursor = (data.get("response_metadata") or {}).get("next_cursor")
         if not cursor:
-            return messages
+            # ★ has_more は「まだ取っていないものがある」という意味。
+            #   ここで取れた分だけ返すと、呼び出し側はそれを全部だと思って state を進め、
+            #   取れなかった古い方を**永久に落とす**。返さずに落とす方が安全。
+            raise Exception("conversations.history が has_more=true のまま次のカーソルを返しませんでした")
 
     # ここに来るのは、has_more が延々と true を返す異常応答のとき。
     # 黙って抜けると「取り切った」と誤解してstateを進め、残りを永久に落とす。
@@ -208,10 +211,21 @@ def missing_fields(text):
 
 
 def upload_file(f, channel):
+    """添付ファイルを #repitte-hotel へ転送する。
+
+    ★ 失敗したら**必ず例外にする**（2026-09-10）。
+      以前はログを1行出して黙って戻っていたため、呼び出し側の
+      「失敗したらスレッドに警告を残す」経路をすり抜け、
+      **添付が付かないまま誰にも気づかれず終わっていた**。
+      契約書の添付が落ちるのは、転記そのものが落ちるのと同じくらい困る。"""
     url = f.get("url_private_download") or f.get("url_private")
     if not url:
-        return
-    content = requests.get(url, headers=HEADERS).content
+        raise Exception(f"添付にダウンロード先のURLがありません: {f.get('name')}")
+
+    got = requests.get(url, headers=HEADERS)
+    if not got.ok:
+        raise Exception(f"添付のダウンロードに失敗しました（HTTP {got.status_code}）: {f.get('name')}")
+    content = got.content
 
     resp = requests.post(
         "https://slack.com/api/files.getUploadURLExternal",
@@ -220,10 +234,11 @@ def upload_file(f, channel):
     ).json()
 
     if not resp.get("ok"):
-        print(f"files.getUploadURLExternal failed: {resp}")
-        return
+        raise Exception(f"files.getUploadURLExternal failed: {resp.get('error')}")
 
-    requests.post(resp["upload_url"], data=content)
+    put = requests.post(resp["upload_url"], data=content)
+    if not put.ok:
+        raise Exception(f"アップロード先への送信に失敗しました（HTTP {put.status_code}）")
 
     result = requests.post(
         "https://slack.com/api/files.completeUploadExternal",
@@ -232,7 +247,7 @@ def upload_file(f, channel):
     ).json()
 
     if not result.get("ok"):
-        print(f"files.completeUploadExternal failed: {result}")
+        raise Exception(f"files.completeUploadExternal failed: {result.get('error')}")
 
 
 def post_contract(msg, text):
@@ -280,15 +295,18 @@ def main():
     # ★ 記録するのは「窓の中で一番新しいts」ではなく「処理し終えた最後のts」。
     #   途中で失敗した回に窓の端まで進めてしまうと、まだ転記していない契約報告を
     #   飛び越して二度と読まなくなる。逆に一切進めないと、転記済みの分を再投稿する。
-    #   1件ずつ進めれば、落とすことも重ねることもない。
-    progress_ts = None
+    #
+    # ★ しかも「1件ずつ」は**その場でファイルに書く**という意味でなければならない。
+    #   ループの外で1回だけ書く作りだと、途中で例外ではなく突然死したとき
+    #   （ジョブのタイムアウト・SIGKILL・ランナー障害）に書き込み自体が起きず、
+    #   転記済みの契約報告を次回また投稿する。
     posted = 0
 
     # 並べ替えは時刻として行う（文字列の辞書順だと桁数が変わったときに順序が狂う）。
     for msg in sorted(messages, key=lambda m: float(m["ts"])):
         text = msg.get("text", "")
         if "【契約獲得】" not in text or "リピッテホテル" not in text:
-            progress_ts = msg["ts"]   # 転記の対象外。読み終えたので進めてよい
+            advance_last_ts(msg["ts"])   # 転記の対象外。読み終えたので進めてよい
             continue
 
         try:
@@ -299,7 +317,10 @@ def main():
             print(f"[ERROR] 転記に失敗したのでここで打ち切ります（{jst(msg['ts'])}）: {e}")
             break
 
-        progress_ts = msg["ts"]   # 本体は投稿済み。ここは二度と繰り返さない
+        # ★ 投稿した直後に、その場で記録する。あとでまとめて書くと、
+        #   ここから下で突然死したときに「投稿はされたが記録は無い」状態になり、
+        #   次回この契約報告をもう一度投稿する。
+        advance_last_ts(msg["ts"])
         posted += 1
 
         try:
@@ -319,9 +340,6 @@ def main():
                 )
             except Exception as notify_error:
                 print(f"[ERROR] エラーの通知そのものにも失敗しました: {notify_error}")
-
-    if progress_ts:
-        advance_last_ts(progress_ts)
 
     # ★ 「動いた」ではなく「何件仕事をしたか」を必ず出す。
     #   成功時のログが無いと、正常な回と何も起きていない回をあとから区別できない。

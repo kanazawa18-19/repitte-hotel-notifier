@@ -183,11 +183,17 @@ def test_ページングして全件取る(monkeypatch):
     assert seen == [None, "c1", "c2"]
 
 
-def test_next_cursorが空なら止まる(monkeypatch):
-    """has_more は真なのに cursor が返ってこない異常応答で、無限ループにしない。"""
+def test_next_cursorが空なら例外にする(monkeypatch):
+    """★ has_more は真なのに cursor が返ってこない異常応答。
+
+    ここで「取れた分だけ」返すと、呼び出し側はそれを全部だと思って state を進め、
+    **取れなかった古い方を永久に落とす**。Slackは新しい順に返すので、
+    落ちるのは必ず古い方＝まだ転記していない契約報告になる。
+    黙って部分取得を返すくらいなら、その回を丸ごと失敗させる方が安全。"""
     monkeypatch.setattr(monitor, "slack_get",
                         lambda method, **p: {"messages": [{"ts": "1.0"}], "has_more": True})
-    assert monitor.fetch_all_messages("C1", "0") == [{"ts": "1.0"}]
+    with pytest.raises(Exception, match="カーソル"):
+        monitor.fetch_all_messages("C1", "0")
 
 
 def test_ページングが際限なく続いたら例外にする(monkeypatch):
@@ -199,3 +205,48 @@ def test_ページングが際限なく続いたら例外にする(monkeypatch):
                                              "response_metadata": {"next_cursor": "ずっと続く"}})
     with pytest.raises(Exception, match="ページ"):
         monitor.fetch_all_messages("C1", "0")
+
+def test_転記の直後にその場でstateを書く(state_dir, monkeypatch):
+    """★ 「1件ずつ進める」は**その場でファイルに書く**という意味。
+
+    ループの外でまとめて書く作りだと、例外ではなく突然死したとき
+    （ジョブのタイムアウト・SIGKILL・ランナー障害）に書き込み自体が起きず、
+    転記済みの契約報告を次回また投稿する。
+    ここでは「本体を投稿した瞬間に、もうファイルへ書けているか」を見る。"""
+    state_dir.write_text("50.0")
+    messages = [{"ts": "100.0", "text": CONTRACT}, {"ts": "200.0", "text": CONTRACT}]
+    monkeypatch.setattr(monitor, "fetch_all_messages", lambda channel, oldest: messages)
+
+    書けていた = []
+
+    def fake_post(method, **body):
+        # 投稿した「直後」ではなく、次の投稿の時点でファイルを覗く。
+        書けていた.append(state_dir.read_text().strip())
+        return {"ts": "999.0"}
+
+    monkeypatch.setattr(monitor, "slack_post", fake_post)
+    monitor.main()
+
+    # 2件目を投稿する時点で、1件目のtsが既にファイルに載っていること
+    assert 書けていた == ["50.0", "100.0"]
+    assert state_dir.read_text().strip() == "200.0"
+
+
+def test_添付の失敗は黙って握りつぶさない(monkeypatch):
+    """★ 以前はログを1行出して戻るだけだった。
+
+    呼び出し側の「失敗したらスレッドに警告を残す」経路をすり抜け、
+    **添付が付かないまま誰にも気づかれず終わっていた**。契約書が落ちるのは困る。"""
+    class 応答:
+        ok = True
+        content = b"x"
+
+        @staticmethod
+        def json():
+            return {"ok": False, "error": "upload_failed"}
+
+    monkeypatch.setattr(monitor.requests, "get", lambda *a, **k: 応答())
+    monkeypatch.setattr(monitor.requests, "post", lambda *a, **k: 応答())
+
+    with pytest.raises(Exception, match="getUploadURLExternal"):
+        monitor.upload_file({"name": "契約書.pdf", "url_private": "https://example.test/f"}, "C1")
