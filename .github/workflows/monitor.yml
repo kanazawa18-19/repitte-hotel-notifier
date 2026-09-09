@@ -8,6 +8,14 @@ on:
 permissions:
   contents: write
 
+# ★ 同時に2つ走らせない。stateを読んでから書くまでの間に別のrunが割り込むと、
+#   両方が同じ起点から同じメッセージを取得し、#repitte-hotel へ二重に転記する。
+#   cancel-in-progress: false は「走っている方を殺さず、後から来た方を待たせる」。
+#   途中で殺すと、転記だけ済んでstateが進んでいない状態で止まりうる。
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
 jobs:
   monitor:
     runs-on: ubuntu-latest
