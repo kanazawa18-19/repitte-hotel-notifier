@@ -48,14 +48,25 @@ def slack_post(method, **body):
 
 
 def transform(text):
+    """#job_sales の契約報告を #repitte-hotel 向けに書き換える。
+
+    ★ 「契約サービス：」行は消さない（2026-09-10 に修正）。
+      以前はこの行を消していたが、下流の cnctor-onboarding が
+      「契約サービス行が無い＝転記bot経由＝リピッテホテル本体の契約」と
+      判定しているため、オプション契約（例:「リピッテホテル連携WebHook Hub」）を
+      転記すると本体契約として契約・解約リストに1行足されてしまっていた。
+      オプション名にも「リピッテホテル」が含まれるので、このbotの検知条件
+      （【契約獲得】＋リピッテホテル）だけでは区別できない。
+      行を残せば下流の _is_repitte_target() が値を見て正しくスキップできる。
+
+    ★ 「月額費用：」の粗利は引き続き伏せる。こちらは社外に出さない情報。
+    """
     text = text.replace(
         f"<@{HIRAMOTO_USER_ID}>",
         f"<@{TAKESUE_USER_ID}> <!subteam^{REPITTE_TEAM_GROUP_ID}>"
     )
     lines = []
     for line in text.splitlines():
-        if line.strip().startswith("契約サービス："):
-            continue
         if line.strip().startswith("月額費用："):
             line = re.sub(r"（[^）]*粗利[^）]*）", "", line)
         lines.append(line)
