@@ -111,6 +111,29 @@ def main():
         if not relayed:
             missed.append(t)
     print(f"   → 転記が見当たらないもの: {len(missed)}件")
+    print()
+
+    # ③ ②が0件だったときに「本当に無かった」のか「検知できていない」のかを分ける。
+    #    monitor.py は msg["text"] しか見ない。ワークフローやbotが blocks / attachments で
+    #    投稿していると text が空になり、**1件も気づかないまま静かに素通りする**。
+    print("--- ③ 検知漏れの可能性を切り分ける ---")
+    empty_text = [m for m in job if not m.get("text", "").strip()]
+    print(f"   text が空の投稿: {len(empty_text)}件"
+          f"（blocks/attachments だけの投稿。monitor.py からは中身が見えない）")
+    for m in empty_text[:5]:
+        print(f"      {jst(m['ts'])}  blocks={len(m.get('blocks') or [])} "
+              f"attachments={len(m.get('attachments') or [])} subtype={m.get('subtype')}")
+
+    for label, hit in (
+        ("「契約獲得」を含む（商品を問わず）", lambda t: "契約獲得" in t),
+        ("「リピッテ」を含む", lambda t: "リピッテ" in t),
+        ("「契約」を含む", lambda t: "契約" in t),
+    ):
+        found = [m for m in job if hit(m.get("text", ""))]
+        print(f"   {label}: {len(found)}件")
+        for m in sorted(found, key=lambda m: -float(m["ts"]))[:5]:
+            first = (m.get("text", "").splitlines() or [""])[0][:50]
+            print(f"      {jst(m['ts'])}  {first}")
     return 0
 
 
