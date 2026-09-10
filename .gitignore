@@ -5,3 +5,5 @@ __pycache__/
 .DS_Store
 venv/
 .venv/
+pending_repair_notice.json.tmp
+last_processed.txt.tmp

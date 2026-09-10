@@ -54,11 +54,27 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add last_processed.txt
+          # ★ 「stateを直した」お知らせの未送分も一緒に保存する。
+          #   ここで保存しないと、伝えられなかったお知らせが次の実行に残らず、
+          #   壊れていた間の取りこぼしを人に知らせる機会が永久に失われる。
+          #   伝わって消えたときは削除がステージされる。まだ一度も出たことが
+          #   なければ追跡対象にも無いので、その場合だけ git add を呼ばない。
+          #   ★ `|| true` で握りつぶさない。権限やリポジトリ破損など、本当に
+          #     対処が要る失敗まで無音になる（2026-09-10 の shirokuma-sec 指摘）。
+          if [ -f pending_repair_notice.json ] \
+             || git ls-files --error-unmatch pending_repair_notice.json >/dev/null 2>&1; then
+            # ★ `-A` を付けて削除も明示的にステージする（2026-09-10 の Gemini Pro 指摘）。
+            #   素の `git add <file>` でも削除は入るが、それは Git 2.0 で変わった
+            #   既定の挙動に乗っているだけ。ここで削除が入らないと、伝え終えた
+            #   お知らせがリポジトリに残り続け、次の実行が同じ内容を言い直す。
+            git add -A -- pending_repair_notice.json
+          fi
           # ★ push の前に必ず rebase で追いつく。
           #   bot の実行中（1〜2分）に誰かが main へ push していると、
           #   ここが non-fast-forward で失敗する。失敗すると state が保存されず、
           #   次回また同じ起点から読み直して**転記済みの契約報告を二重に投稿する**。
-          #   直すのは last_processed.txt だけなので、rebase で衝突する余地はほぼ無い。
+          #   触るのは last_processed.txt と pending_repair_notice.json の2つだけで、
+          #   どちらもこのbotしか書かないので、rebase で衝突する余地はほぼ無い。
           git diff --staged --quiet || (
             git commit -m "update last processed [skip ci]" &&
             git pull --rebase origin main &&
