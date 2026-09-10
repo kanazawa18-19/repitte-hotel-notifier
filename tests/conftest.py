@@ -4,12 +4,16 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-test-dummy")
-os.environ.setdefault("JOB_SALES_CHANNEL_ID", "CTEST_JOBSALES")
-os.environ.setdefault("REPITTE_HOTEL_CHANNEL_ID", "CTEST_REPITTE")
-os.environ.setdefault("HIRAMOTO_USER_ID", "UTEST_HIRAMOTO")
-os.environ.setdefault("TAKESUE_USER_ID", "UTEST_TAKESUE")
-os.environ.setdefault("REPITTE_TEAM_GROUP_ID", "STEST_TEAM")
+# ★ setdefault ではなく上書きする（2026-09-10）。
+#   テストはここの値を本文に埋めて期待値と突き合わせるので、実行環境に
+#   同名の環境変数があると、そちらが勝って **ローカルだけ通りCIで落ちる**。
+#   cnctor-onboarding で実際に落ちた（run 34456531139）。前提値はここで固定する。
+os.environ["SLACK_BOT_TOKEN"] = "xoxb-test-dummy"
+os.environ["JOB_SALES_CHANNEL_ID"] = "CTEST_JOBSALES"
+os.environ["REPITTE_HOTEL_CHANNEL_ID"] = "CTEST_REPITTE"
+os.environ["HIRAMOTO_USER_ID"] = "UTEST_HIRAMOTO"
+os.environ["TAKESUE_USER_ID"] = "UTEST_TAKESUE"
+os.environ["REPITTE_TEAM_GROUP_ID"] = "STEST_TEAM"
 
 import pytest  # noqa: E402
 import monitor  # noqa: E402
