@@ -69,3 +69,64 @@ def test_言い方が揺れても拾える():
 def test_何も書かれていなければ全部返る():
     assert monitor.missing_fields("【契約獲得】リピッテホテル") == \
         ["課金開始月", "請求方法", "予約番契約有無"]
+
+
+# ── 元投稿へのリンク（下流の cnctor-onboarding が元スレッドを辿る手がかり） ──
+
+def test_ワークスペース名が無くても目印は必ず出す(monkeypatch):
+    """★ 目印（元投稿ID）は下流が元スレッドへ戻るための唯一の手がかり。
+
+    リンクは人が飛ぶための表示物なので、ワークスペース名が無ければ出さなくてよい。
+    だが目印まで消すと、初期構築botの完了報告が #job_sales へ戻れなくなる。"""
+    monkeypatch.setattr(monitor, "SLACK_WORKSPACE", "")
+    out = monitor.transform("【契約獲得】リピッテホテル\n", "1757000000.123456")
+
+    assert "slack.com" not in out
+    assert out.endswith(f"（元投稿ID: {monitor.JOB_SALES_CHANNEL_ID}/1757000000.123456）")
+
+
+def test_リンクと目印を両方添える(monkeypatch):
+    monkeypatch.setattr(monitor, "SLACK_WORKSPACE", "cnctor")
+    out = monitor.transform("【契約獲得】リピッテホテル\n", "1757000000.123456")
+
+    assert out.endswith(
+        f"（元の投稿: https://cnctor.slack.com/archives/{monitor.JOB_SALES_CHANNEL_ID}"
+        f"/p1757000000123456 ／ 元投稿ID: {monitor.JOB_SALES_CHANNEL_ID}/1757000000.123456）")
+
+
+def test_目印はURLの形にしない():
+    """★ 2026-09-10 の GPT-5.6 Sol 指摘。
+
+    Slack は本文をAPIで返すとき、自動リンク化したURLを <https://...> に変える。
+    目印がURLだと、下流の正規表現が**本番でだけ**外れる。
+    山括弧もスラッシュ2つも含まない形に固定しておく。"""
+    marker = monitor.source_marker("1757000000.123456")
+    assert marker == f"元投稿ID: {monitor.JOB_SALES_CHANNEL_ID}/1757000000.123456"
+    assert "://" not in marker and "<" not in marker
+
+
+def test_リンクのtsは小数点を抜く(monkeypatch):
+    """Slackのパーマリンクは `p` のあとに小数点を含めない形式。値そのものを固定する。"""
+    monkeypatch.setattr(monitor, "SLACK_WORKSPACE", "cnctor")
+    assert monitor.source_permalink("1757000000.123456") == \
+        f"https://cnctor.slack.com/archives/{monitor.JOB_SALES_CHANNEL_ID}/p1757000000123456"
+
+
+def test_ワークスペース名が無ければリンクは空(monkeypatch):
+    """弾く側。未設定のまま https://.slack.com/... という壊れたリンクを出さない。"""
+    monkeypatch.setattr(monitor, "SLACK_WORKSPACE", "")
+    assert monitor.source_permalink("1757000000.123456") == ""
+
+
+def test_元のtsが無ければ何も添えない(monkeypatch):
+    monkeypatch.setattr(monitor, "SLACK_WORKSPACE", "cnctor")
+    out = monitor.transform("【契約獲得】リピッテホテル\n")
+    assert "元の投稿" not in out and "元投稿ID" not in out
+
+
+def test_Kintoneの依頼文は消さない(monkeypatch):
+    """リンクを足したせいで、既存の依頼文が押し出されていないこと。"""
+    monkeypatch.setattr(monitor, "SLACK_WORKSPACE", "cnctor")
+    out = monitor.transform("【契約獲得】リピッテホテル\n", "1757000000.123456")
+
+    assert "Kintoneの更新をお願いします！" in out

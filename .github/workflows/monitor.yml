@@ -45,6 +45,7 @@ jobs:
           HIRAMOTO_USER_ID: ${{ secrets.HIRAMOTO_USER_ID }}
           TAKESUE_USER_ID: ${{ secrets.TAKESUE_USER_ID }}
           REPITTE_TEAM_GROUP_ID: ${{ secrets.REPITTE_TEAM_GROUP_ID }}
+          SLACK_WORKSPACE: ${{ secrets.SLACK_WORKSPACE }}
 
       # ★ if: always() を付ける。監視本体が途中で落ちても、確定した起点だけは残す。
       #   起点が残らないと、次の回でまた引き直され、その間の投稿を落とす。

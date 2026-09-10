@@ -11,6 +11,11 @@ REPITTE_HOTEL_CHANNEL_ID = os.environ["REPITTE_HOTEL_CHANNEL_ID"]
 HIRAMOTO_USER_ID = os.environ["HIRAMOTO_USER_ID"]
 TAKESUE_USER_ID = os.environ["TAKESUE_USER_ID"]
 REPITTE_TEAM_GROUP_ID = os.environ["REPITTE_TEAM_GROUP_ID"]
+# ★ 転記文の末尾に置く「元の投稿」リンクを組み立てるためのワークスペース名
+#   （https://<ここ>.slack.com/...）。**未設定ならリンクを出さない。**
+#   下流の cnctor-onboarding は、このリンクから
+#   「#job_sales のどの投稿の話か」を復元して、同じスレッドへ完了報告を出す。
+SLACK_WORKSPACE = os.environ.get("SLACK_WORKSPACE", "").strip()
 
 HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 STATE_FILE = "last_processed.txt"
@@ -460,7 +465,35 @@ def slack_post(method, **body):
     return data
 
 
-def transform(text):
+def source_permalink(ts):
+    """#job_sales の元投稿へのリンクを組み立てる。取れなければ空文字。
+
+    ★ これは**人が元投稿へ飛ぶための表示物**。機械の判定には使わせない（source_marker を参照）。
+    ★ chat.getPermalink を呼ばない。転記のたびにAPIが1本増えるうえ、
+      そこが落ちると転記そのものが落ちる。形式は固定なので文字列で作れる。
+      例: https://cnctor.slack.com/archives/C0123ABC/p1757000000123456"""
+    if not SLACK_WORKSPACE:
+        return ""
+    return (f"https://{SLACK_WORKSPACE}.slack.com/archives/"
+            f"{JOB_SALES_CHANNEL_ID}/p{ts.replace('.', '')}")
+
+
+# 下流（cnctor-onboarding）が「#job_sales のどの投稿の話か」を復元するための目印。
+# ★ URLをパースさせない（2026-09-10 の GPT-5.6 Sol 指摘）。
+#   Slack は conversations.history で本文を返すとき、自動リンク化したURLを
+#   <https://...> の形（mrkdwn）に変えて返す。生URLを前提にした正規表現は
+#   **本番で必ず外れ**、完了報告が #job_sales の元スレッドへ戻らなくなる。
+#   本当の識別子は channel と ts で、URLは人に見せるための表示物にすぎない。
+#   この形（山括弧もスラッシュ2つも含まない）なら Slack の整形で変わらない。
+SOURCE_MARKER_LABEL = "元投稿ID"
+
+
+def source_marker(ts):
+    """下流が元スレッドを特定するための機械可読な目印。**ワークスペース名が無くても出せる。**"""
+    return f"{SOURCE_MARKER_LABEL}: {JOB_SALES_CHANNEL_ID}/{ts}"
+
+
+def transform(text, source_ts=None):
     """#job_sales の契約報告を #repitte-hotel 向けに書き換える。
 
     ★ 「契約サービス：」行は消さない（2026-09-10 に修正）。
@@ -483,7 +516,16 @@ def transform(text):
         if line.strip().startswith("月額費用："):
             line = re.sub(r"（[^）]*粗利[^）]*）", "", line)
         lines.append(line)
-    return "\n".join(lines).rstrip() + "\n\nお手数ですが、\nKintoneの更新をお願いします！"
+    body = "\n".join(lines).rstrip() + "\n\nお手数ですが、\nKintoneの更新をお願いします！"
+    if not source_ts:
+        return body
+    # ★ この行を消すと、初期構築botの完了報告が #job_sales の元スレッドへ戻れなくなる。
+    #   リンクは人が飛ぶため（ワークスペース名が未設定なら出ない）、
+    #   目印は下流の機械が読むため（常に出る）。役割が違うので両方を残す。
+    link = source_permalink(source_ts)
+    marker = source_marker(source_ts)
+    return body + (f"\n\n（元の投稿: {link} ／ {marker}）" if link
+                   else f"\n\n（{marker}）")
 
 
 def missing_fields(text):
@@ -535,28 +577,137 @@ def post_contract(msg, text):
 
     ★ ここが失敗した時点では、まだ何も投稿されていない。呼び出し側は state を進めずに
       打ち切ってよい（次回やり直しても二重にならない）。"""
-    result = slack_post("chat.postMessage", channel=REPITTE_HOTEL_CHANNEL_ID, text=transform(text))
+    result = slack_post("chat.postMessage", channel=REPITTE_HOTEL_CHANNEL_ID,
+                       text=transform(text, msg["ts"]))
     return result["ts"]
 
 
-def post_extras(msg, text, message_ts):
-    """添付ファイルの転送と、不足項目のリマインドを行う。
+def assignees_text(*user_ids):
+    """お願いする相手を `<@Uxxx>さん、<@Uyyy>さん` の形に整える。
 
-    ★ ここが失敗しても、本体の転記はすでに済んでいる。呼び出し側は state を進めること。
-      進めないと、次回また本体から転記し直して #repitte-hotel に同じ報告が二重に並ぶ。"""
-    for f in msg.get("files", []):
-        upload_file(f, REPITTE_HOTEL_CHANNEL_ID)
+    ★ 未設定のIDは黙って落とす。`<@>` のまま出すと、誰宛か分からないうえに
+      Slack上ではただの文字列になって**通知も飛ばない**。
+      1人も残らなければ空文字を返し、呼び出し側がその行ごと出さない。"""
+    named = [f"<@{uid}>さん" for uid in user_ids if uid]
+    return "、".join(named)
+
+
+def remaining_tasks(msg, text):
+    """人にお願いする残りを [(やること, お願いする相手), ...] で返す。
+
+    ★ 「相手が決まらないものは並べない」。
+      誰に頼むか書いていない残タスクは、全員が自分以外の仕事だと思って誰もやらない。"""
+    tasks = []
 
     absent = missing_fields(text)
     poster = msg.get("user")
     if absent and poster:
-        items = "\n".join(f"・{field}" for field in absent)
-        slack_post(
-            "chat.postMessage",
-            channel=REPITTE_HOTEL_CHANNEL_ID,
-            thread_ts=message_ts,
-            text=f"<@{poster}> 以下の情報もご共有いただけますか？\n{items}",
-        )
+        # 足りない項目を知っているのは報告した本人だけ。#job_sales の元スレッドで聞く。
+        tasks.append(("、".join(absent) + "のご共有", assignees_text(poster)))
+
+    # ★ 「事業計画の反映」はここでは出さない（2026-09-10 のレビュー指摘）。
+    #   リピッテホテルは、この転記のあとに cnctor-onboarding が同じ元スレッドへ
+    #   完了報告を出す。両方が同じお願いを積むと、同じ人に同じ依頼が2回届く。
+    #   契約の締めとして出すのは初期構築側の役目にして、こちらは転記の話だけに絞る。
+    return [(what, who) for what, who in tasks if who]
+
+
+def completion_report_text(msg, text, done, failed=(), note=""):
+    """完了報告の本文を組み立てる。**できてもできなくても出す**（2026-09-10 本人指示）。
+
+    ★ 「できたこと」と「できなかったこと」を必ず両方書く。
+      できたことだけ並べると、途中で止まった回が成功した回と見分けられない。"""
+    head = "✅ リピッテホテルの契約報告を転記しました！" if not failed else \
+           "⚠️ リピッテホテルの契約報告の転記が、途中までで止まりました！"
+    lines = [head, ""]
+
+    if done:
+        lines.append("*できたこと*")
+        lines += [f"・{item}" for item in done]
+        lines.append("")
+
+    if failed:
+        lines.append("*できなかったこと*")
+        lines += [f"・{item}" for item in failed]
+        lines.append("")
+
+    if note:
+        lines.append(note)
+        lines.append("")
+
+    tasks = remaining_tasks(msg, text)
+    if tasks:
+        lines.append("*残っているタスク*")
+        lines += [f"・{what}については、{who}よろしくお願いします！" for what, who in tasks]
+
+    return "\n".join(lines).rstrip()
+
+
+def post_completion_report(msg, text, done, failed=(), note=""):
+    """#job_sales の契約報告の**元スレッド**へ、どこまでやったかを報告する。
+
+    ★ 報告先は常に #job_sales の元スレッド（2026-09-10 本人指示）。
+      転記先（#repitte-hotel）のスレッドに出しても、報告した本人と営業部は見に行かない。
+      「どこまでやったか」は、契約を報告した場所に戻して初めて人の目に入る。"""
+    slack_post(
+        "chat.postMessage",
+        channel=JOB_SALES_CHANNEL_ID,
+        thread_ts=msg["ts"],
+        text=completion_report_text(msg, text, done, failed, note),
+    )
+
+
+def safe_report(msg, text, done, failed=(), note=""):
+    """完了報告を出す。**出せなくても監視は止めない。**
+
+    ★ 例外を握りつぶしてよい唯一の場所。ここは「人に知らせる」ための処理で、
+      転記そのものは既に終わっているか、既に失敗が確定している。
+      ここで例外を上げ直すと、報告できなかったせいで後続の契約報告まで止まる。"""
+    try:
+        post_completion_report(msg, text, done, failed, note)
+        return True
+    except Exception as e:
+        print(f"[ERROR] 完了報告そのものに失敗しました（{jst(msg['ts'])}）: {e}")
+        return False
+
+
+def post_extras(msg, text, message_ts):
+    """添付を #repitte-hotel へ転送し、#job_sales の元スレッドへ完了報告を出す。
+
+    ★ ここが失敗しても、本体の転記はすでに済んでいる。呼び出し側は state を進めること。
+      進めないと、次回また本体から転記し直して #repitte-hotel に同じ報告が二重に並ぶ。"""
+    done = ["#repitte-hotel への転記"]
+
+    files = msg.get("files", [])
+    転送済み = 0
+    添付の失敗 = None
+    for f in files:
+        try:
+            upload_file(f, REPITTE_HOTEL_CHANNEL_ID)
+        except Exception as e:
+            # ★ ここで打ち切るが、例外は投げ直さない（2026-09-10 の GPT-5.6 Sol 指摘）。
+            #   投げ直すと、呼び出し元が「添付も完了報告も失敗」とまとめて扱い、
+            #   **何件転送できたかが人に伝わらない**。転送済みの分は正しく報告する。
+            添付の失敗 = e
+            break
+        転送済み += 1
+
+    if 転送済み:
+        done.append(f"添付ファイル{転送済み}件の転送")
+
+    if 添付の失敗 is None:
+        post_completion_report(msg, text, done)
+        return
+
+    print(f"[ERROR] 添付の転送に失敗しました（{jst(msg['ts'])}）: {添付の失敗}")
+    残り = len(files) - 転送済み
+    post_completion_report(
+        msg, text, done,
+        failed=[f"添付ファイル{残り}件の転送"],
+        note=("*自動ではやり直しません。* お手数ですが #repitte-hotel の転記を開いて、"
+              "足りない添付ファイルをそのスレッドに手で貼っていただけますか。\n"
+              "すでに付いているものを貼り直す必要はありません。"),
+    )
 
 
 def main():
@@ -643,6 +794,12 @@ def _transcribe_new_messages(oldest):
             # まだ #repitte-hotel には何も出ていない。ここで打ち切り、次回この投稿からやり直す。
             # 先へ進めると、この契約報告だけが誰にも転記されないまま埋もれる。
             print(f"[ERROR] 転記に失敗したのでここで打ち切ります（{jst(msg['ts'])}）: {e}")
+            # ★ できなかった回も必ず報告する（2026-09-10 本人指示）。
+            #   黙って打ち切ると、#job_sales からは「まだ誰も見ていない」のと
+            #   区別が付かない。Slackごと不調なら報告も飛ばないが、そのときは
+            #   次の実行でやり直すので、言えなかったこと自体は失われない。
+            safe_report(msg, text, done=[], failed=["#repitte-hotel への転記"],
+                        note="*次の実行でやり直します。* 手で転記しないでください（二重に並びます）。")
             break
 
         # ★ 投稿した直後に、その場で記録する。あとでまとめて書くと、
@@ -656,18 +813,11 @@ def _transcribe_new_messages(oldest):
         except Exception as e:
             # 本体の転記は済んでいるので、stateは進めたまま次へ行く（重複より欠落を選ぶ）。
             # ただしログ1行では誰も見ないので、転記したメッセージのスレッドに残して人が拾えるようにする。
-            print(f"[ERROR] 添付／リマインドに失敗しました（{jst(msg['ts'])}）: {e}")
-            try:
-                slack_post(
-                    "chat.postMessage",
-                    channel=REPITTE_HOTEL_CHANNEL_ID,
-                    thread_ts=message_ts,
-                    text="⚠️この契約報告の転記は済んでいますが、添付ファイルまたは不足項目の確認で"
-                         "エラーが出ました。\nやり直すと同じ報告が二重に並ぶため、自動では再実行しません。"
-                         "\nお手数ですが #job_sales の元の投稿をご確認ください。",
-                )
-            except Exception as notify_error:
-                print(f"[ERROR] エラーの通知そのものにも失敗しました: {notify_error}")
+            # ★ ここに来るのは「完了報告そのものを出せなかった」場合だけ。
+            #   添付の失敗は post_extras が自分で報告するので、ここでは扱わない
+            #   （混ぜると、添付は全部転送できているのに「添付が失敗」と伝えてしまう）。
+            print(f"[ERROR] 完了報告に失敗しました（{jst(msg['ts'])}）: {e}")
+            safe_report(msg, text, done=["#repitte-hotel への転記"])
 
     # ★ 「動いた」ではなく「何件仕事をしたか」を必ず出す。
     #   成功時のログが無いと、正常な回と何も起きていない回をあとから区別できない。

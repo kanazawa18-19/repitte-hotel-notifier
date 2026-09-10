@@ -93,9 +93,10 @@ def test_転記に失敗したら打ち切って成功分までstateを進める
     投稿した = []
 
     def fake_post(method, **body):
-        if "2件目" in body.get("text", ""):
+        if 転記の投稿か(body) and "2件目" in body.get("text", ""):
             raise Exception("チャンネルが見つかりません")
-        投稿した.append(body["text"])
+        if 転記の投稿か(body):
+            投稿した.append(body["text"])
         return {"ts": "999.0"}
 
     monkeypatch.setattr(monitor, "slack_post", fake_post)
@@ -126,7 +127,13 @@ def test_添付に失敗しても本体は再投稿されない(state_dir, monke
 
     assert state_dir.read_text().strip() == "100.0"
     assert any("⚠️" in b.get("text", "") for b in 投稿した)   # 人が拾えるよう知らせている
-    assert any(b.get("thread_ts") == "999.0" for b in 投稿した)  # 転記したスレッドの中に
+    # ★ 報告先は常に #job_sales の契約報告の元スレッド（2026-09-10 本人指示）。
+    #   転記先（#repitte-hotel）のスレッドに出しても、報告した本人と営業部は見に行かない。
+    知らせ = [b for b in 投稿した 
+              if "⚠️" in b.get("text", "")]
+    assert 知らせ, "できなかったことを誰にも知らせていない"
+    assert all(b.get("channel") == monitor.JOB_SALES_CHANNEL_ID for b in 知らせ)
+    assert all(b.get("thread_ts") == "100.0" for b in 知らせ)  # 元投稿のスレッドの中に
 
 
 def test_stateは巻き戻らない(state_dir, monkeypatch):
@@ -140,6 +147,14 @@ def test_stateは巻き戻らない(state_dir, monkeypatch):
     monitor.main()
 
     assert state_dir.read_text().strip() == "5000.0"
+
+
+def 転記の投稿か(body):
+    """#repitte-hotel への本体転記だけを拾う。
+
+    ★ 2026-09-10 から、転記のあとに #job_sales の元スレッドへ完了報告を出す。
+      slack_post の呼び出し回数で数えると、そちらまで巻き込んで数がずれる。"""
+    return body.get("channel") == monitor.REPITTE_HOTEL_CHANNEL_ID and "thread_ts" not in body
 
 
 def test_処理済みの印は時刻として最大のts(state_dir, monkeypatch):
@@ -160,7 +175,8 @@ def test_処理済みの印は時刻として最大のts(state_dir, monkeypatch)
     投稿順 = []
 
     def fake_post(method, **body):
-        投稿順.append(body["text"])
+        if 転記の投稿か(body):
+            投稿順.append(body["text"])
         return {"ts": "999.0"}
 
     monkeypatch.setattr(monitor, "slack_post", fake_post)
@@ -230,7 +246,9 @@ def test_転記の直後にその場でstateを書く(state_dir, monkeypatch):
 
     def fake_post(method, **body):
         # 投稿した「直後」ではなく、次の投稿の時点でファイルを覗く。
-        書けていた.append(state_dir.read_text().strip())
+        # 完了報告は転記のあとに出るので、本体の転記だけを見る。
+        if 転記の投稿か(body):
+            書けていた.append(state_dir.read_text().strip())
         return {"ts": "999.0"}
 
     monkeypatch.setattr(monitor, "slack_post", fake_post)
